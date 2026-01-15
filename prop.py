@@ -4,6 +4,7 @@ from PIL import Image, ImageTk, ImageDraw, ImageFilter
 
 def load_prop_page(userdata):
     import hel
+    import accountingpage as acc 
 
     profile = tk.Tk()
     profile.title("Profile Page")
@@ -84,7 +85,11 @@ def load_prop_page(userdata):
     row("Name", userdata.get("name", "N/A"))
     row("Age", userdata.get("age", "N/A"))
     row("City", userdata.get("city", "N/A"))
-    row("Annual Income", userdata.get("income", "N/A"))
+    row("Annual Income", userdata.get("income", "N/A"))\
+    
+    def openaccpage():
+        profile.destroy()
+        acc.load_acc_page()
 
     def openhealthpage():
         profile.destroy()
@@ -113,7 +118,8 @@ def load_prop_page(userdata):
         fg="white",
         width=16,
         bd=0,
-        pady=10
+        pady=10,
+        command=openaccpage
     ).pack(side="right", padx=20)
 
 
