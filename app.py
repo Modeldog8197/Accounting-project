@@ -2,10 +2,14 @@
 
 import calendar
 import math
+import sqlite3
 import tkinter as tk
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from tkinter import ttk, messagebox
+
+from guidance import ACTIVITY_STEPS, GUIDES, SLEEP_STEPS
+from storage import DEFAULT_DATABASE, Store
 
 BG, WHITE, INK, MUTED = '#F4F7FA', '#FFFFFF', '#172B35', '#627580'
 GREEN, SOFT, LINE, BLUE = '#176B5B', '#E4F3ED', '#DDE5E8', '#5667C8'
@@ -65,8 +69,11 @@ def field(parent, caption, var):
 
 
 class App(tk.Tk):
-    def __init__(self, initial='welcome', userdata=None):
+    def __init__(self, initial='welcome', userdata=None, database=DEFAULT_DATABASE):
         super().__init__()
+        self.store = Store(database)
+        self.user_id, self.saved = None, {}
+        self.initial = initial
         self.title('WellLedger | Accounting & Health')
         self.geometry('1120x800')
         self.minsize(880, 620)
@@ -93,7 +100,7 @@ class App(tk.Tk):
                             command=lambda k=key: self.show(k), cursor='hand2')
             btn.pack(fill='x', padx=12, pady=3)
             self.nav[key] = btn
-        label(self.sidebar, 'Private by default\nData stays in this session.', 9, '#AFCCC3', justify='left').pack(side='bottom', anchor='w', padx=24, pady=28)
+        label(self.sidebar, 'Saved on this computer\nSign in to see your entries.', 9, '#AFCCC3', justify='left', wraplength=150).pack(side='bottom', anchor='w', padx=24, pady=28)
         main = tk.Frame(self, bg=BG)
         main.pack(side='right', fill='both', expand=True)
         toolbar = tk.Frame(main, bg=WHITE, height=64)
@@ -101,7 +108,10 @@ class App(tk.Tk):
         self.back_btn = button(toolbar, '← Back', self.back, False)
         self.back_btn.pack(side='left', padx=(24, 10), pady=10)
         button(toolbar, 'Home', self.home, False).pack(side='left', pady=10)
-        label(toolbar, 'Accounting & Health', 10, MUTED).pack(side='right', padx=24)
+        self.logout_btn = button(toolbar, 'Log out', self.logout, False)
+        self.logout_btn.pack(side='right', padx=(8, 24), pady=10)
+        self.save_btn = button(toolbar, 'Save inputs', self.save_inputs, False)
+        self.save_btn.pack(side='right', pady=10)
         self.canvas = tk.Canvas(main, bg=BG, bd=0, highlightthickness=0)
         scroll = ttk.Scrollbar(main, orient='vertical', command=self.canvas.yview)
         scroll.pack(side='right', fill='y'); self.canvas.pack(fill='both', expand=True)
@@ -113,14 +123,19 @@ class App(tk.Tk):
         self.bind_all('<MouseWheel>', self.wheel)
         self.bind('<Alt-Left>', lambda e: self.back())
         self.bind('<Control-h>', lambda e: self.home())
-        self.show(initial, remember=False)
+        self.protocol('WM_DELETE_WINDOW', self.close)
+        self.show('login', remember=False)
 
     def wheel(self, event):
         if self.host.winfo_height() > self.canvas.winfo_height():
             self.canvas.yview_scroll(-int(event.delta / 120), 'units')
 
     def show(self, route, remember=True):
+        if self.user_id is None and route not in ('login', 'signup'):
+            route = 'login'
         if route == self.current:
+            return
+        if self.user_id is not None and not self.save_workspace():
             return
         if self.current:
             if self.current == 'calendar':
@@ -129,11 +144,14 @@ class App(tk.Tk):
             self.pages[self.current].pack_forget()
         if route not in self.pages:
             self.pages[route] = Page(self.host, self, route)
+            self.pages[route].restore(self.saved.get('pages', {}).get(route, {}))
         self.current = route
         page = self.pages[route]
         page.pack(fill='both', expand=True)
         page.refresh()
         self.back_btn.configure(state='normal' if self.history else 'disabled')
+        for btn in [self.save_btn, self.logout_btn, *self.nav.values()]:
+            btn.configure(state='normal' if self.user_id is not None else 'disabled')
         section = 'health' if route in ('bmi', 'fitness', 'sleep', 'cycle', 'guides', 'nutrition', 'exercise', 'care') else route
         for key, btn in self.nav.items():
             btn.configure(bg='#27574B' if key == section else '#143C35', fg=WHITE if key == section else '#D7E8E1')
@@ -148,9 +166,76 @@ class App(tk.Tk):
         if self.current == 'home': self.back_btn.configure(state='disabled')
         else: self.show('home', remember=False)
 
+    def sign_in(self, user_id, destination='home'):
+        # Load before changing the session so unreadable data is never overwritten.
+        saved, _ = self.store.load(user_id)
+        self.reset_pages()
+        self.user_id, self.saved = user_id, saved
+        for key, var in self.user.items():
+            var.set(saved.get('profile', {}).get(key, ''))
+        self.reminders = dict(saved.get('reminders', {}))
+        if destination == 'home' and not self.user['name'].get():
+            destination = 'welcome'
+        self.show(destination, remember=False)
+
+    def save_workspace(self):
+        if self.user_id is None:
+            return True
+        if self.current == 'calendar':
+            self.pages['calendar'].preserve_note()
+        page_data = dict(self.saved.get('pages', {}))
+        for route, page in self.pages.items():
+            values = page.snapshot()
+            if values:
+                page_data[route] = values
+        data = {'profile': {key: var.get() for key, var in self.user.items()},
+                'reminders': dict(self.reminders), 'pages': page_data}
+        if data == self.saved:
+            return True
+        try:
+            self.store.save(self.user_id, data)
+        except sqlite3.Error:
+            messagebox.showerror('Could not save', 'Your inputs are still open. Check disk space and database permissions, then try Save inputs again.', parent=self)
+            return False
+        self.saved = data
+        return True
+
+    def save_inputs(self):
+        if self.save_workspace():
+            messagebox.showinfo('Inputs saved', 'Your inputs are saved on this computer.', parent=self)
+
+    def reset_pages(self):
+        for widget in self.winfo_children():
+            if isinstance(widget, tk.Toplevel):
+                widget.destroy()
+        for page in self.pages.values():
+            page.destroy()
+        self.pages, self.history, self.current = {}, [], None
+
+    def logout(self):
+        if not self.save_workspace():
+            return
+        self.reset_pages()
+        self.user_id, self.saved, self.reminders = None, {}, {}
+        for var in self.user.values():
+            var.set('')
+        self.show('login', remember=False)
+
+    def close(self):
+        if self.save_workspace():
+            self.destroy()
+
+    def destroy(self):
+        if hasattr(self, 'store'):
+            self.store.close()
+        super().destroy()
+
 
 class Page(tk.Frame):
     TITLES = {
+        'login': ('Welcome to WellLedger', 'Log in to continue, or view your saved inputs.'),
+        'signup': ('Create an account', 'Your account and entries stay on this computer.'),
+        'progress': ('Your saved inputs', 'Your latest saved workspace, not a history or a measure of improvement.'),
         'welcome': ('A little more balance.', 'One place for your expenses, wellbeing, and everyday plans.'),
         'profile': ('Your profile', 'Update your details without losing your progress.'),
         'home': ('Your everyday overview', 'Small steps toward a clearer picture of your money and wellbeing.'),
@@ -175,14 +260,119 @@ class Page(tk.Frame):
         getattr(self, 'build_' + ('profile' if route == 'welcome' else route))()
 
     def refresh(self):
+        if self.route == 'progress': self.refresh_progress()
         if self.route == 'home':
             name = self.app.user['name'].get().strip().split()
             self.greeting.configure(text=f"Welcome back, {name[0]}" if name else 'Welcome to WellLedger')
         if self.route == 'calendar': self.render_month()
         if self.route == 'calendar': self.load_date()
 
+    def build_login(self):
+        self.build_auth(False)
+
+    def build_signup(self):
+        self.build_auth(True)
+
+    def build_auth(self, signup):
+        box = card(self, 'Sign up' if signup else 'Log in',
+                   'Use a username and a password of at least 8 characters.' if signup else
+                   'View progress also requires your username and password.')
+        box.pack(fill='x')
+        self.username, self.password, self.confirm = (tk.StringVar(self.app) for _ in range(3))
+        field(box.content, 'Username', self.username).focus_set()
+        field(box.content, 'Password', self.password).configure(show='•')
+        if signup:
+            field(box.content, 'Confirm password', self.confirm).configure(show='•')
+        self.feedback = self.result(box.content)
+        actions = tk.Frame(box.content, bg=WHITE); actions.pack(fill='x')
+        button(actions, 'Create account' if signup else 'Log in', self.authenticate).pack(side='left')
+        if not signup:
+            button(actions, 'View progress', lambda: self.authenticate('progress'), False).pack(side='left', padx=10)
+        button(box.content, 'Back to login' if signup else 'Create an account',
+               lambda: self.switch_auth('login' if signup else 'signup'), False).pack(anchor='w', pady=(16, 0))
+
+    def switch_auth(self, route):
+        self.password.set(''); self.confirm.set('')
+        self.app.show(route)
+
+    def authenticate(self, destination=None):
+        try:
+            if self.route == 'signup':
+                if self.password.get() != self.confirm.get():
+                    raise ValueError('The passwords do not match.')
+                user_id = self.app.store.sign_up(self.username.get(), self.password.get())
+            else:
+                user_id = self.app.store.log_in(self.username.get(), self.password.get())
+            self.app.sign_in(user_id, destination or (self.app.initial if self.app.initial != 'welcome' else 'home'))
+        except ValueError as exc:
+            self.feedback.configure(text=str(exc), fg='#B42318')
+        except sqlite3.Error:
+            self.feedback.configure(text='Could not open your account. Check the database and try again.', fg='#B42318')
+
+    def snapshot(self):
+        """Save input text as entered; credentials and generated results are excluded."""
+        values = {}
+        for name in ('weight', 'height', 'cycle_date', 'cycle_note'):
+            if hasattr(self, name): values[name] = getattr(self, name).get()
+        for name in ('activity', 'expenses'):
+            if hasattr(self, name):
+                values[name] = {(' / '.join(key) if isinstance(key, tuple) else key): var.get()
+                                for key, var in getattr(self, name).items()}
+        if hasattr(self, 'sleep_vars'): values['sleep'] = [var.get() for var in self.sleep_vars]
+        if hasattr(self, 'plan'): values['plan'] = self.plan.get('1.0', 'end-1c')
+        return values
+
+    def restore(self, values):
+        for name in ('weight', 'height', 'cycle_date', 'cycle_note'):
+            if name in values: getattr(self, name).set(values[name])
+        for name in ('activity', 'expenses'):
+            if name in values:
+                for key, var in getattr(self, name).items():
+                    var.set(values[name].get(' / '.join(key) if isinstance(key, tuple) else key, ''))
+        if 'sleep' in values:
+            for var, value in zip(self.sleep_vars, values['sleep']): var.set(value)
+        if 'plan' in values:
+            self.plan.delete('1.0', 'end'); self.plan.insert('1.0', values['plan'])
+
+    def build_progress(self):
+        self.saved_time = label(self, '', 11, MUTED)
+        self.saved_time.pack(anchor='w', pady=(0, 12))
+        self.progress_body = tk.Frame(self, bg=BG); self.progress_body.pack(fill='x')
+        button(self, 'Continue to overview', self.app.home).pack(anchor='e', pady=18)
+
+    def refresh_progress(self):
+        for widget in self.progress_body.winfo_children(): widget.destroy()
+        try:
+            data, saved_at = self.app.store.load(self.app.user_id)
+        except (sqlite3.Error, ValueError):
+            self.saved_time.configure(text='Could not read saved inputs. Please try again.')
+            return
+        self.saved_time.configure(text=f'Last saved: {saved_at}' if saved_at else 'No saved inputs yet.')
+        sections = [('Profile', data.get('profile', {}))]
+        captions = {'name': 'Name', 'age': 'Age', 'city': 'City', 'income': 'Annual income (₹)',
+                    'weight': 'Weight (kg)', 'height': 'Height (cm)', 'cycle_date': 'Period start date',
+                    'cycle_note': 'Cycle note', 'plan': 'Notes'}
+        for route, values in data.get('pages', {}).items():
+            rows = {}
+            for key, value in values.items():
+                if isinstance(value, dict): rows.update(value)
+                elif isinstance(value, list): rows.update({f'Night {i + 1} (hours)': v for i, v in enumerate(value)})
+                else: rows[key] = value
+            sections.append((self.TITLES[route][0], rows))
+        sections.append(('Calendar reminders', data.get('reminders', {})))
+        count = 0
+        for title, rows in sections:
+            lines = [f'{captions.get(key, key)}: {value}' for key, value in rows.items() if str(value).strip()]
+            if not lines: continue
+            count += 1
+            box = card(self.progress_body, title); box.pack(fill='x', pady=(0, 12))
+            label(box.content, '\n'.join(lines), 11, wraplength=500, justify='left').pack(anchor='w')
+        if not count:
+            label(self.progress_body, 'No inputs saved yet. Open a tool and enter your details.', wraplength=620).pack(anchor='w')
+        label(self.progress_body, 'Values are shown as entered, including unfinished drafts.', 10, MUTED).pack(anchor='w')
+
     def result(self, parent):
-        widget = label(parent, '', 11, GREEN, wraplength=620, justify='left')
+        widget = label(parent, '', 11, GREEN, wraplength=500 if self.route in ('bmi', 'fitness', 'sleep') else 620, justify='left')
         widget.pack(anchor='w', pady=16)
         return widget
 
@@ -220,7 +410,8 @@ class Page(tk.Frame):
                     ('Health', 'Body metrics, activity, sleep, and cycle tracking.', 'health'),
                     ('Calendar', 'Keep important dates and reminders close at hand.', 'calendar'),
                     ('Profile', 'Review or edit your personal details.', 'profile')])
-        label(self, 'Your entries are retained as you move between pages. Closing the app clears this session.', 10, MUTED, wraplength=680, justify='left').pack(anchor='w', pady=8)
+        button(self, 'View progress', lambda: self.app.show('progress'), False).pack(anchor='w')
+        label(self, 'Inputs save when you change pages, log out, close normally, or choose Save inputs.', 10, MUTED, wraplength=680, justify='left').pack(anchor='w', pady=8)
 
     def build_accounting(self):
         self.expenses, self.metrics = {}, {}
@@ -318,13 +509,17 @@ class Page(tk.Frame):
 
     def calculate_bmi(self):
         try:
+            age = self.app.user['age'].get().strip()
+            if not age or number(age, 'age', 1, 120) < 20:
+                raise ValueError('Adult BMI categories are for age 20 and above. Set your age in Your profile. Younger users should discuss growth with a healthcare professional.')
             weight = number(self.weight.get(), 'weight', .1, 1000)
             height = number(self.height.get(), 'height', 30, 300)
             bmi = weight / (height / 100) ** 2
         except ValueError as exc:
             self.feedback.configure(text=str(exc), fg='#B42318'); return
         category = 'Underweight' if bmi < 18.5 else 'Healthy weight range' if bmi < 25 else 'Overweight' if bmi < 30 else 'Obesity range'
-        self.feedback.configure(text=f'BMI {bmi:.1f}  ·  {category}\nDiscuss questions about your measurements with a healthcare professional.', fg=GREEN)
+        self.feedback.configure(text=f'BMI {bmi:.1f}  ·  {category}\nCheck your height and weight units before using this result. BMI alone does not assess your health. Bring questions to a healthcare professional; use the meal and activity plans to organize everyday habits.', fg=GREEN)
+        self.app.save_workspace()
 
     def build_fitness(self):
         box = card(self, 'Today’s activity', 'Keep a simple record of your daily habits.'); box.pack(fill='x')
@@ -339,7 +534,8 @@ class Page(tk.Frame):
             if not values['Steps'].is_integer(): raise ValueError('Steps must be a whole number.')
         except ValueError as exc:
             self.feedback.configure(text=str(exc), fg='#B42318'); return
-        self.feedback.configure(text=f"Today: {values['Steps']:,.0f} steps · {values['Exercise (minutes)']:g} minutes of exercise · {values['Water (glasses)']:g} glasses of water.\nYour check-in stays available throughout this session.", fg=GREEN)
+        self.feedback.configure(text=f"Entered: {values['Steps']:,.0f} steps · {values['Exercise (minutes)']:g} minutes of exercise · {values['Water (glasses)']:g} glasses of water.\n\n{ACTIVITY_STEPS}", fg=GREEN)
+        self.app.save_workspace()
 
     def build_sleep(self):
         box = card(self, 'Seven-night sleep log', 'Enter hours slept for each night, from oldest to most recent.'); box.pack(fill='x')
@@ -352,7 +548,8 @@ class Page(tk.Frame):
         try: values = [number(v.get(), 'sleep hours', 0, 24) for v in self.sleep_vars]
         except ValueError as exc:
             self.feedback.configure(text=str(exc), fg='#B42318'); return
-        self.feedback.configure(text=f'Average: {sum(values) / 7:.1f} hours per night\nShortest: {min(values):g} hours · Longest: {max(values):g} hours', fg=GREEN)
+        self.feedback.configure(text=f'Average: {sum(values) / 7:.1f} hours per night\nShortest: {min(values):g} hours · Longest: {max(values):g} hours\n\n{SLEEP_STEPS}', fg=GREEN)
+        self.app.save_workspace()
 
     def build_cycle(self):
         box = card(self, 'Record a cycle date', 'Keep a personal record. This tool does not predict fertility or provide contraceptive guidance.'); box.pack(fill='x')
@@ -370,7 +567,8 @@ class Page(tk.Frame):
         key = value.isoformat()
         existing = self.app.reminders.get(key, '')
         self.app.reminders[key] = (existing + '\nCycle: period start. ' + self.cycle_note.get().strip()).strip()
-        self.feedback.configure(text='Added to your calendar for this session.', fg=GREEN)
+        if self.app.save_workspace():
+            self.feedback.configure(text='Saved to your calendar.', fg=GREEN)
 
     def build_guides(self):
         self.tiles([('Diet & nutrition', 'Plan meals and keep personal dietary notes.', 'nutrition'),
@@ -388,13 +586,20 @@ class Page(tk.Frame):
         self.build_notes('Appointment preparation', 'Questions to ask:\n\nSymptoms or changes to discuss:\n\nNotes from my healthcare professional:\n\nNext appointment:\n')
 
     def build_notes(self, title, template):
-        box = card(self, title, 'These notes stay available while the application is open.'); box.pack(fill='x')
+        heading, steps = GUIDES[self.route]
+        guide = card(self, heading, 'General planning ideas; adapt these to your circumstances.')
+        guide.pack(fill='x', pady=(0, 16))
+        label(guide.content, steps, 11, wraplength=500, justify='left').pack(anchor='w')
+        box = card(self, title, 'Use Save notes to keep your plan for your next login.'); box.pack(fill='x')
         self.plan = tk.Text(box.content, height=13, font=('Segoe UI', 11), wrap='word', bg=BG, fg=INK, relief='flat', padx=14, pady=14)
         self.plan.pack(fill='x')
         self.plan.insert('1.0', template)
         self.feedback = self.result(box.content)
-        button(box.content, 'Keep notes', lambda: self.feedback.configure(text='Notes kept for this session.')).pack(anchor='e')
+        button(box.content, 'Save notes', self.save_notes).pack(anchor='e')
         button(self, 'Plan a reminder', lambda: self.app.show('calendar'), False).pack(anchor='e', pady=18)
+
+    def save_notes(self):
+        if self.app.save_workspace(): self.feedback.configure(text='Notes saved.', fg=GREEN)
 
     def build_calendar(self):
         self.selected = date.today(); self.month = self.selected.replace(day=1)
@@ -460,7 +665,7 @@ class Page(tk.Frame):
 
     def save_reminder(self):
         self.preserve_note(); self.render_month()
-        self.feedback.configure(text='Reminder updated for this session.', fg=GREEN)
+        if self.app.save_workspace(): self.feedback.configure(text='Reminder saved.', fg=GREEN)
 
 
 def launch(route='welcome', userdata=None):
