@@ -1,40 +1,48 @@
-"""Local accounts and one saved workspace per user. No server is needed."""
+"""Accounts and saved inputs using simple MySQL queries."""
 
 import hashlib
 import hmac
 import json
 import re
 import secrets
-import sqlite3
-from pathlib import Path
+from datetime import datetime, timezone
+
+import mysql.connector
 
 
-DEFAULT_DATABASE = Path.home() / '.wellledger' / 'wellledger.sqlite3'
 PASSWORD_ROUNDS = 600_000
 
 
+def database_config():
+    try:
+        from db_config import DB_CONFIG
+    except ImportError as exc:
+        raise ValueError('Copy db_config.example.py to db_config.py and enter your MySQL details. See README.md.') from exc
+    return dict(DB_CONFIG)
+
+
 class Store:
-    def __init__(self, path=DEFAULT_DATABASE):
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        new_file = not path.exists()
-        self.connection = sqlite3.connect(path)
-        if new_file:
-            path.chmod(0o600)
-        self.connection.execute('PRAGMA foreign_keys = ON')
-        self.connection.executescript('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY,
-                username TEXT NOT NULL UNIQUE,
-                salt BLOB NOT NULL,
-                password_hash BLOB NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS workspaces (
-                user_id INTEGER PRIMARY KEY REFERENCES users(id),
-                data TEXT NOT NULL,
-                saved_at TEXT NOT NULL
-            );
-        ''')
+    def __init__(self, config=None):
+        settings = database_config() if config is None else dict(config)
+        settings.setdefault('connection_timeout', 5)
+        self.connection = mysql.connector.connect(**settings)
+        # The tables are created by running setup.sql once.
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute('SELECT id FROM users WHERE id = %s', (0,))
+            cursor.fetchall()
+            cursor.execute('SELECT user_id FROM workspaces WHERE user_id = %s', (0,))
+            cursor.fetchall()
+            self.connection.commit()
+            cursor.close()
+        except mysql.connector.Error:
+            self.connection.close()
+            raise
+
+    def open_cursor(self):
+        # Reconnect before a new operation if the local server was restarted.
+        self.connection.ping(reconnect=True, attempts=1, delay=0)
+        return self.connection.cursor(buffered=True)
 
     def sign_up(self, username, password):
         username = username.strip().lower()
@@ -44,44 +52,75 @@ class Store:
             raise ValueError('Use a password of 8–128 characters, not just spaces.')
         salt = secrets.token_bytes(16)
         password_hash = self.hash_password(password, salt)
+        cursor = self.open_cursor()
         try:
-            with self.connection:
-                row = self.connection.execute(
-                    'INSERT INTO users (username, salt, password_hash) VALUES (?, ?, ?)',
-                    (username, salt, password_hash))
-            return row.lastrowid
-        except sqlite3.IntegrityError as exc:
-            raise ValueError('That username is already taken.') from exc
+            cursor.execute(
+                'INSERT INTO users (username, salt, password_hash) VALUES (%s, %s, %s)',
+                (username, salt.hex(), password_hash))
+            user_id = cursor.lastrowid
+            self.connection.commit()
+            return user_id
+        except mysql.connector.Error as exc:
+            self.connection.rollback()
+            if exc.errno == 1062:
+                raise ValueError('That username is already taken.') from exc
+            raise
+        finally:
+            cursor.close()
 
     @staticmethod
     def hash_password(password, salt):
-        return hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, PASSWORD_ROUNDS)
+        # Hashing is Python work; SQL only stores the resulting text.
+        return hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, PASSWORD_ROUNDS).hex()
 
     def log_in(self, username, password):
         if len(password) > 128:
             raise ValueError('Incorrect username or password.')
-        row = self.connection.execute(
-            'SELECT id, salt, password_hash FROM users WHERE username = ?',
-            (username.strip().lower(),)).fetchone()
-        # Do the same expensive hash even if the username is missing.
-        salt = row[1] if row else bytes(16)
+        cursor = self.open_cursor()
+        try:
+            cursor.execute(
+                'SELECT id, salt, password_hash FROM users WHERE username = %s',
+                (username.strip().lower(),))
+            row = cursor.fetchone()
+            self.connection.commit()
+        finally:
+            cursor.close()
+        salt = bytes.fromhex(row[1]) if row else bytes(16)
         candidate = self.hash_password(password, salt)
         if not row or not hmac.compare_digest(row[2], candidate):
             raise ValueError('Incorrect username or password.')
         return row[0]
 
     def save(self, user_id, data):
-        with self.connection:
-            self.connection.execute('''
-                INSERT INTO workspaces (user_id, data, saved_at)
-                VALUES (?, ?, strftime('%Y-%m-%d %H:%M:%S UTC', 'now'))
-                ON CONFLICT(user_id) DO UPDATE SET
-                    data = excluded.data, saved_at = excluded.saved_at
-            ''', (user_id, json.dumps(data, ensure_ascii=False)))
+        # Keep the existing Python data format as text; no MySQL JSON functions.
+        text = json.dumps(data, ensure_ascii=False)
+        saved_at = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+        cursor = self.open_cursor()
+        try:
+            cursor.execute('SELECT user_id FROM workspaces WHERE user_id = %s', (user_id,))
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    'INSERT INTO workspaces (user_id, data, saved_at) VALUES (%s, %s, %s)',
+                    (user_id, text, saved_at))
+            else:
+                cursor.execute(
+                    'UPDATE workspaces SET data = %s, saved_at = %s WHERE user_id = %s',
+                    (text, saved_at, user_id))
+            self.connection.commit()
+        except mysql.connector.Error:
+            self.connection.rollback()
+            raise
+        finally:
+            cursor.close()
 
     def load(self, user_id):
-        row = self.connection.execute(
-            'SELECT data, saved_at FROM workspaces WHERE user_id = ?', (user_id,)).fetchone()
+        cursor = self.open_cursor()
+        try:
+            cursor.execute('SELECT data, saved_at FROM workspaces WHERE user_id = %s', (user_id,))
+            row = cursor.fetchone()
+            self.connection.commit()
+        finally:
+            cursor.close()
         if row is None:
             return {}, None
         try:
@@ -89,7 +128,7 @@ class Store:
             if not isinstance(data, dict):
                 raise ValueError
         except (ValueError, TypeError) as exc:
-            raise ValueError('Saved data could not be read. Keep a backup of the database before repairing it.') from exc
+            raise ValueError('Saved data could not be read. Keep a database backup before repairing it.') from exc
         return data, row[1]
 
     def close(self):

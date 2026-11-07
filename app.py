@@ -2,14 +2,14 @@
 
 import calendar
 import math
-import sqlite3
+import mysql.connector
 import tkinter as tk
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from tkinter import ttk, messagebox
 
 from guidance import ACTIVITY_STEPS, GUIDES, SLEEP_STEPS
-from storage import DEFAULT_DATABASE, Store
+from storage import Store
 
 BG, WHITE, INK, MUTED = '#F4F7FA', '#FFFFFF', '#172B35', '#627580'
 GREEN, SOFT, LINE, BLUE = '#176B5B', '#E4F3ED', '#DDE5E8', '#5667C8'
@@ -69,9 +69,15 @@ def field(parent, caption, var):
 
 
 class App(tk.Tk):
-    def __init__(self, initial='welcome', userdata=None, database=DEFAULT_DATABASE):
+    def __init__(self, initial='welcome', userdata=None, database=None):
         super().__init__()
-        self.store = Store(database)
+        try:
+            self.store = Store(database)
+        except (mysql.connector.Error, ValueError) as exc:
+            messagebox.showerror('MySQL setup',
+                                 f'Could not open the database. Start MySQL, run setup.sql and check db_config.py.\n\n{exc}', parent=self)
+            super().destroy()
+            raise
         self.user_id, self.saved = None, {}
         self.initial = initial
         self.title('WellLedger | Accounting & Health')
@@ -194,8 +200,8 @@ class App(tk.Tk):
             return True
         try:
             self.store.save(self.user_id, data)
-        except sqlite3.Error:
-            messagebox.showerror('Could not save', 'Your inputs are still open. Check disk space and database permissions, then try Save inputs again.', parent=self)
+        except mysql.connector.Error:
+            messagebox.showerror('Could not save', 'Your inputs are still open. Check that MySQL is running and your account can save data, then try Save inputs again.', parent=self)
             return False
         self.saved = data
         return True
@@ -306,7 +312,7 @@ class Page(tk.Frame):
             self.app.sign_in(user_id, destination or (self.app.initial if self.app.initial != 'welcome' else 'home'))
         except ValueError as exc:
             self.feedback.configure(text=str(exc), fg='#B42318')
-        except sqlite3.Error:
+        except mysql.connector.Error:
             self.feedback.configure(text='Could not open your account. Check the database and try again.', fg='#B42318')
 
     def snapshot(self):
@@ -344,7 +350,7 @@ class Page(tk.Frame):
         for widget in self.progress_body.winfo_children(): widget.destroy()
         try:
             data, saved_at = self.app.store.load(self.app.user_id)
-        except (sqlite3.Error, ValueError):
+        except (mysql.connector.Error, ValueError):
             self.saved_time.configure(text='Could not read saved inputs. Please try again.')
             return
         self.saved_time.configure(text=f'Last saved: {saved_at}' if saved_at else 'No saved inputs yet.')
@@ -669,7 +675,11 @@ class Page(tk.Frame):
 
 
 def launch(route='welcome', userdata=None):
-    App(route, userdata).mainloop()
+    try:
+        app = App(route, userdata)
+    except (mysql.connector.Error, ValueError):
+        return  # The setup message has already been shown.
+    app.mainloop()
 
 
 if __name__ == '__main__':

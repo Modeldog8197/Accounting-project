@@ -1,0 +1,16 @@
+CREATE DATABASE IF NOT EXISTS wellledger CHARACTER SET utf8mb4;
+USE wellledger;
+
+CREATE TABLE IF NOT EXISTS users (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    username VARCHAR(32) NOT NULL UNIQUE,
+    salt VARCHAR(32) NOT NULL,
+    password_hash VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS workspaces (
+    user_id INT PRIMARY KEY,
+    data TEXT NOT NULL,
+    saved_at VARCHAR(24) NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);

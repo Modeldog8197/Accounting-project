@@ -2,14 +2,13 @@
 
 import unittest
 import os
-import sqlite3
-import tempfile
-from pathlib import Path
+import mysql.connector
 from unittest.mock import patch
 from datetime import date
 from decimal import Decimal
 
 from app import App, amount
+from test_support import prepare_database
 
 
 class CurrencyTests(unittest.TestCase):
@@ -23,8 +22,7 @@ class CurrencyTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('DISPLAY') or os.name == 'nt' or __import__('sys').platform == 'darwin', 'Needs a desktop display')
 class NavigationTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.database = Path(self.temp.name) / 'test.sqlite3'
+        self.database = prepare_database()
         self.app = App(database=self.database)
         self.app.withdraw()
         user_id = self.app.store.sign_up('preview', 'test-password')
@@ -33,7 +31,6 @@ class NavigationTests(unittest.TestCase):
 
     def tearDown(self):
         self.app.destroy()
-        self.temp.cleanup()
 
     def test_login_gate_and_wrong_password(self):
         self.app.logout()
@@ -94,12 +91,17 @@ class NavigationTests(unittest.TestCase):
 
     def test_failed_save_does_not_logout_or_close(self):
         self.app.user['name'].set('Keep my draft')
-        with patch.object(self.app.store, 'save', side_effect=sqlite3.OperationalError('disk full')), patch('app.messagebox.showerror'):
+        with patch.object(self.app.store, 'save', side_effect=mysql.connector.OperationalError('server unavailable')), patch('app.messagebox.showerror'):
             self.app.logout()
             self.app.close()
             self.assertIsNotNone(self.app.user_id)
             self.assertEqual(self.app.user['name'].get(), 'Keep my draft')
             self.assertTrue(self.app.winfo_exists())
+
+    def test_startup_database_error_is_explained(self):
+        with patch('app.Store', side_effect=mysql.connector.DatabaseError('server unavailable')), patch('app.messagebox.showerror') as dialog:
+            with self.assertRaises(mysql.connector.DatabaseError): App(database=self.database)
+            self.assertIn('setup.sql', dialog.call_args.args[1])
 
     def test_edit_and_delete_reminder_after_login(self):
         self.app.reminders['2026-11-02'] = 'Original reminder'
