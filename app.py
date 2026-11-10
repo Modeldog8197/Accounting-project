@@ -1,4 +1,4 @@
-"""Accounting and health tools in one navigable desktop window."""
+"""Accounting and health app."""
 
 import calendar
 import math
@@ -16,7 +16,7 @@ GREEN, SOFT, LINE, BLUE = '#176B5B', '#E4F3ED', '#DDE5E8', '#5667C8'
 
 
 def amount(text):
-    """Parse currency without accepting infinity, NaN or negatives."""
+    """Read a finite, non-negative amount."""
     try:
         value = Decimal(text.strip().replace(',', '') or '0')
         if not value.is_finite() or value < 0:
@@ -173,7 +173,7 @@ class App(tk.Tk):
         else: self.show('home', remember=False)
 
     def sign_in(self, user_id, destination='home'):
-        # Load before changing the session so unreadable data is never overwritten.
+        # Load first to protect unreadable data.
         saved, _ = self.store.load(user_id)
         self.reset_pages()
         self.user_id, self.saved = user_id, saved
@@ -316,7 +316,7 @@ class Page(tk.Frame):
             self.feedback.configure(text='Could not open your account. Check the database and try again.', fg='#B42318')
 
     def snapshot(self):
-        """Save input text as entered; credentials and generated results are excluded."""
+        """Save inputs, excluding passwords and results."""
         values = {}
         for name in ('weight', 'height', 'cycle_date', 'cycle_note'):
             if hasattr(self, name): values[name] = getattr(self, name).get()
@@ -631,7 +631,7 @@ class Page(tk.Frame):
             self.notes.edit_modified(False)
 
     def preserve_note(self):
-        # Drafts are kept in memory when dates or pages change.
+        # Keep drafts between pages.
         content = self.notes.get('1.0', 'end').strip()
         key = self.selected.isoformat()
         if content: self.app.reminders[key] = content
@@ -678,7 +678,7 @@ def launch(route='welcome', userdata=None):
     try:
         app = App(route, userdata)
     except (mysql.connector.Error, ValueError):
-        return  # The setup message has already been shown.
+        return  # Setup error shown above.
     app.mainloop()
 
 

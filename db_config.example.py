@@ -1,4 +1,4 @@
-"""Copy this file to db_config.py and fill in your local MySQL details."""
+"""Copy to db_config.py and enter your MySQL login."""
 
 DB_CONFIG = {
     'host': '127.0.0.1',

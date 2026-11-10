@@ -1,4 +1,4 @@
-"""Accounts and saved inputs using simple MySQL queries."""
+"""MySQL accounts and saved inputs."""
 
 import hashlib
 import hmac
@@ -26,7 +26,7 @@ class Store:
         settings = database_config() if config is None else dict(config)
         settings.setdefault('connection_timeout', 5)
         self.connection = mysql.connector.connect(**settings)
-        # The tables are created by running setup.sql once.
+        # Tables come from setup.sql.
         try:
             cursor = self.connection.cursor()
             cursor.execute('SELECT id FROM users WHERE id = %s', (0,))
@@ -40,7 +40,7 @@ class Store:
             raise
 
     def open_cursor(self):
-        # Reconnect before a new operation if the local server was restarted.
+        # Reconnect if needed.
         self.connection.ping(reconnect=True, attempts=1, delay=0)
         return self.connection.cursor(buffered=True)
 
@@ -70,7 +70,7 @@ class Store:
 
     @staticmethod
     def hash_password(password, salt):
-        # Hashing is Python work; SQL only stores the resulting text.
+        # Hash passwords in Python.
         return hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, PASSWORD_ROUNDS).hex()
 
     def log_in(self, username, password):
@@ -92,7 +92,7 @@ class Store:
         return row[0]
 
     def save(self, user_id, data):
-        # Keep the existing Python data format as text; no MySQL JSON functions.
+        # Store inputs as JSON text.
         text = json.dumps(data, ensure_ascii=False)
         saved_at = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
         cursor = self.open_cursor()

@@ -1,7 +1,4 @@
-"""Short, practical wellbeing suggestions; no diagnoses or tracking engine.
-
-Sources and scope are documented in README.md.
-"""
+"""General wellbeing suggestions."""
 
 SLEEP_STEPS = (
     '1. Choose a regular bedtime and wake-up time, including weekends.\n'

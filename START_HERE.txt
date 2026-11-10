@@ -1,0 +1,37 @@
+WELLLEDGER - START HERE
+
+1. Download project_for_viva.zip and extract it completely.
+2. Install Python 3.10 or newer from https://www.python.org/downloads/
+   Windows: select Add Python to PATH during installation.
+3. Install MySQL Community Server from https://dev.mysql.com/downloads/mysql/
+   Remember the local MySQL password. Workbench alone is not the server.
+4. In MySQL Workbench, connect to your local server and run project_for_viva/setup.sql.
+5. Copy db_config.example.py to db_config.py in the WellLedger folder.
+   Edit user and password to match your own MySQL login. Leave database as wellledger.
+6. Open a terminal in the extracted project_for_viva folder.
+   Windows:
+     py -m venv .venv
+     .venv\Scripts\python -m pip install -r requirements.txt
+     .venv\Scripts\python app.py
+   macOS / Linux:
+     python3 -m venv .venv
+     .venv/bin/python -m pip install -r requirements.txt
+     .venv/bin/python app.py
+7. Create your own account in the app. This is separate from your MySQL account.
+
+Next time, start MySQL and run the last command for your system again.
+Linux may need python3-tk and python3-venv installed through its package manager.
+If the database cannot open, check MySQL is running, db_config.py and setup.sql.
+
+
+
+FILES
+app.py: screens and calculations
+storage.py: login and saved inputs
+guidance.py: suggestions
+setup.sql: database tables
+db_config.example.py: connection template
+requirements.txt: Python packages
+
+Suggestions are general information, not medical advice.
+References: https://www.cdc.gov/sleep/about/ and https://www.cdc.gov/bmi/adult-calculator/
