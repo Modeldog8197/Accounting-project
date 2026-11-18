@@ -33,6 +33,10 @@ class Store:
             cursor.fetchall()
             cursor.execute('SELECT user_id FROM workspaces WHERE user_id = %s', (0,))
             cursor.fetchall()
+            cursor.execute('SELECT night FROM sleep_nights WHERE user_id = %s', (0,))
+            cursor.fetchall()
+            cursor.execute('SELECT entry_date FROM daily_expenses WHERE user_id = %s', (0,))
+            cursor.fetchall()
             self.connection.commit()
             cursor.close()
         except mysql.connector.Error:
@@ -133,3 +137,47 @@ class Store:
 
     def close(self):
         self.connection.close()
+
+    def calendar_records(self, user_id):
+        expenses, nights = {}, {}
+        cursor = self.open_cursor()
+        try:
+            cursor.execute('SELECT entry_date, category, amount FROM daily_expenses WHERE user_id = %s', (user_id,))
+            for day, category, value in cursor:
+                expenses.setdefault(day, {})[category] = value
+            cursor.execute('SELECT night, hours, reviewed FROM sleep_nights WHERE user_id = %s', (user_id,))
+            for day, hours, reviewed in cursor:
+                nights[day] = (hours, bool(reviewed))
+            self.connection.commit()
+        finally:
+            cursor.close()
+        return expenses, nights
+
+    def save_expenses(self, user_id, day, values):
+        cursor = self.open_cursor()
+        try:
+            cursor.execute('DELETE FROM daily_expenses WHERE user_id = %s AND entry_date = %s', (user_id, day))
+            for category, value in values.items():
+                cursor.execute('INSERT INTO daily_expenses (user_id, entry_date, category, amount) VALUES (%s, %s, %s, %s)',
+                               (user_id, day, category, value))
+            self.connection.commit()
+        except mysql.connector.Error:
+            self.connection.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def save_nights(self, user_id, changes, review):
+        cursor = self.open_cursor()
+        try:
+            for day, hours in changes.items():
+                cursor.execute('DELETE FROM sleep_nights WHERE user_id = %s AND night = %s AND reviewed = FALSE', (user_id, day))
+                if hours is not None:
+                    cursor.execute('INSERT INTO sleep_nights (user_id, night, hours, reviewed) VALUES (%s, %s, %s, %s)',
+                                   (user_id, day, hours, review))
+            self.connection.commit()
+        except mysql.connector.Error:
+            self.connection.rollback()
+            raise
+        finally:
+            cursor.close()

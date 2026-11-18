@@ -1,14 +1,14 @@
 WELLLEDGER - START HERE
 
-1. Download project_for_viva.zip and extract it completely.
+1. Download the repository ZIP from GitHub and extract it.
 2. Install Python 3.10 or newer from https://www.python.org/downloads/
    Windows: select Add Python to PATH during installation.
 3. Install MySQL Community Server from https://dev.mysql.com/downloads/mysql/
    Remember the local MySQL password. Workbench alone is not the server.
-4. In MySQL Workbench, connect to your local server and run project_for_viva/setup.sql.
-5. Copy db_config.example.py to db_config.py in the WellLedger folder.
+4. In MySQL Workbench, connect to your local server and run setup.sql (also run it when upgrading an existing installation).
+5. Copy db_config.example.py to db_config.py in the extracted folder.
    Edit user and password to match your own MySQL login. Leave database as wellledger.
-6. Open a terminal in the extracted project_for_viva folder.
+6. Open a terminal in the folder containing app.py.
    Windows:
      py -m venv .venv
      .venv\Scripts\python -m pip install -r requirements.txt
@@ -29,6 +29,7 @@ FILES
 app.py: screens and calculations
 storage.py: login and saved inputs
 guidance.py: suggestions
+reports.py: monthly totals and sleep averages
 setup.sql: database tables
 db_config.example.py: connection template
 requirements.txt: Python packages

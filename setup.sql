@@ -14,3 +14,21 @@ CREATE TABLE IF NOT EXISTS workspaces (
     saved_at VARCHAR(24) NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS daily_expenses (
+    user_id INT NOT NULL,
+    entry_date DATE NOT NULL,
+    category VARCHAR(64) NOT NULL,
+    amount DECIMAL(12,2) NOT NULL,
+    PRIMARY KEY (user_id, entry_date, category),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS sleep_nights (
+    user_id INT NOT NULL,
+    night DATE NOT NULL,
+    hours DECIMAL(5,2) NOT NULL,
+    reviewed BOOLEAN NOT NULL DEFAULT FALSE,
+    PRIMARY KEY (user_id, night),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
