@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WellLedger</title>
+<style>
+*{box-sizing:border-box}body{max-width:780px;margin:auto;padding:22px;background:#f7f6f2;color:#243139;font:16px/1.5 system-ui,sans-serif}h1,h2{font-family:Georgia,serif}nav,.controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,select,input{font:inherit;padding:6px 9px;border:1px solid #afb9bd;border-radius:4px;background:white}button{cursor:pointer}button.active,button.primary{background:#244c66;color:white}button:disabled{opacity:.45;cursor:default}main{background:white;border:1px solid #d6dbdc;padding:16px 22px}.row{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding:5px 0}.row input{width:100px}#status{color:#28536a}.track{background:#eceeee;height:12px;display:flex}.bar{display:block;height:100%}small{color:#50606c}
+</style>
+<h1>WellLedger</h1><nav aria-label="Pages"></nav><main></main><p id="status" role="status"></p>
+<script>
+const view=document.querySelector('main'),nav=document.querySelector('nav'),statusBox=document.querySelector('#status');
+const stamp=d=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
+const parse=s=>new Date(s+'T12:00:00');
+function shift(s,n){const d=parse(s);d.setDate(d.getDate()+n);return stamp(d)}
+const monday=s=>shift(s,-((parse(s).getDay()+6)%7));
+const dateLabel=s=>parse(s).toLocaleDateString('en-IN',{day:'numeric',month:'short',weekday:'short'});
+const today=stamp(new Date()),month=today.slice(0,7),previous=shift(month+'-01',-1).slice(0,7);
+let week=shift(monday(today),-7),day=today,left=month,right=previous,age=18;
+const nights={},filed=new Set(),expenses={},notes={},activity=['','',''];
+const categories=['Food & groceries','Transport','Entertainment','Other everyday','Medicines','Tests','Doctor visits','Other healthcare'];
+[7,8,6,7,8,7].forEach((v,i)=>nights[shift(week,i)]=v);
+expenses[shift(month+'-01',-1)]=[0,100,0,0,300,0,0,0];expenses[today]=[200,0,0,0,0,150,0,0];
+const currency=n=>'₹'+n.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+function add(tag,text,parent=view){const n=document.createElement(tag);n.textContent=text;parent.append(n);return n}
+function button(text,fn,parent=view){const n=add('button',text,parent);n.onclick=fn;return n}
+function controls(){const n=add('div','');n.className='controls';return n}
+function picker(text,value,change,max){const box=add('label',text+' '),input=add('input','',box);input.type='date';input.value=value;if(max)input.max=max;input.onchange=()=>{if(input.value&&input.reportValidity())change(input.value)}}
+function num(label,value,max,step){const row=add('label',label);row.className='row';const n=add('input','',row);n.type='number';n.min=0;n.max=max;n.step=step;n.value=value??'';return n}
+function openPage(name){view.replaceChildren();statusBox.textContent='';for(const b of nav.children)b.classList.toggle('active',b.textContent===name);add('h2',name);pages[name]()}
+function sleep(){
+ picker('Week containing',week,s=>{week=monday(s);openPage('Sleep')},today);
+ if(filed.has(week)){add('p','Week filed.');button('View in Calendar',()=>{day=shift(week,6);openPage('Calendar')});return}
+ const rows=Array.from({length:7},(_,i)=>{const d=shift(week,i),n=num(dateLabel(d)+' · hours',nights[d],24,.01);n.disabled=d>today;return [d,n]});
+ const count=add('p',''),review=button('Review sleep',()=>{filed.add(week);const avg=rows.reduce((a,[d])=>a+nights[d],0)/7;openPage('Sleep');statusBox.textContent='Average: '+avg.toFixed(1)+' hours per night.'});
+ function check(){const filled=rows.filter(([,n])=>!n.disabled&&n.value!==''&&n.validity.valid).length;count.textContent=filled+' of 7 nights';review.disabled=filled!==7}
+ for(const [d,n] of rows)n.oninput=()=>{if(n.value!==''&&n.validity.valid)nights[d]=Number(n.value);else delete nights[d];check()};check()
+}
+function accounting(){
+ if(day>today)day=today;picker('Date',day,s=>{day=s;openPage('Expenses')},today);
+ const inputs=categories.map((c,i)=>{if(i===0||i===4)add('h3',i===0?'Everyday':'Healthcare');return num(c+' (₹)',expenses[day]?.[i],9999999999.99,.01)});
+ button('Save day',()=>{if(!inputs.every(n=>n.reportValidity()))return;if(inputs.every(n=>n.value===''))delete expenses[day];else expenses[day]=inputs.map(n=>+n.value);statusBox.textContent='Saved '+currency((expenses[day]||[]).reduce((a,b)=>a+b,0))+'.'},controls())
+}
+function calendar(){
+ picker('Date',day,s=>{day=s;openPage('Calendar')});
+ add('p',day in nights?'Sleep: '+nights[day]+' hours':'No sleep recorded.');
+ if(day in expenses){expenses[day].forEach((v,i)=>{if(v)add('div',categories[i]+' · '+currency(v))});add('p','Total: '+currency(expenses[day].reduce((a,b)=>a+b,0)))}else add('p','No expenses recorded.');
+ const c=controls();button('Edit expenses',()=>openPage('Expenses'),c).disabled=day>today;button('Open sleep week',()=>{week=monday(day);openPage('Sleep')},c).disabled=day>today;
+ const label=add('label','Reminder '),note=add('input','',label);note.value=notes[day]||'';button('Save reminder',()=>{notes[day]=note.value;statusBox.textContent='Reminder saved.'})
+}
+function reports(){
+ const months=[...new Set([month,previous,...Object.keys(expenses).map(d=>d.slice(0,7)),...Object.keys(nights).map(d=>d.slice(0,7))])].sort().reverse();
+ const c=controls();[left,right].forEach((m,i)=>{const label=add('label',i?'Compare with ':'Month ',c),s=add('select','',label);for(const k of months)add('option',k,s);s.value=m;s.onchange=()=>{if(i)right=s.value;else left=s.value;openPage('Monthly reports')}});
+ const rows=[left,right].map(m=>{const days=Object.keys(expenses).filter(d=>d.startsWith(m)),ns=Object.keys(nights).filter(d=>d.startsWith(m));let e=0,h=0;for(const d of days)expenses[d].forEach((v,i)=>{if(i<4)e+=v;else h+=v});return {m,e,h,total:e+h,days:days.length,n:ns.length,avg:ns.length?ns.reduce((s,d)=>s+nights[d],0)/ns.length:0}});
+ function bars(values,max,colors){const track=add('div','');track.className='track';values.forEach((v,i)=>{const b=add('span','',track);b.className='bar';b.style.width=(v*100/max)+'%';b.style.background=colors[i]})}
+ add('h3','Recorded spending');for(const r of rows){add('p',r.m+' · '+(r.days?currency(r.total):'No entries'));bars([r.e,r.h],Math.max(1,...rows.map(x=>x.total)),['#244c66','#bb793f']);add('small',currency(r.e)+' everyday + '+currency(r.h)+' healthcare · '+r.days+' recorded days')}
+ add('h3','Average sleep');for(const r of rows){add('p',r.m+' · '+(r.n?r.avg.toFixed(1)+' h/night · '+r.n+' nights':'No entries'));bars([r.avg],24,['#477667'])}
+}
+function checkIn(){const fields=['Steps','Exercise (minutes)','Water (glasses)'].map((c,i)=>num(c,activity[i],1e9,i===0?1:'any'));button('Save check-in',()=>{for(const n of fields){n.required=true;if(!n.reportValidity())return}fields.forEach((n,i)=>activity[i]=n.value);statusBox.textContent='Check-in saved.'},controls())}
+function profile(){const n=num('Age',age,120,1);n.min=18;n.required=true;button('Save profile',()=>{if(n.reportValidity()){age=+n.value;statusBox.textContent='Profile saved.'}},controls())}
+const pages={'Sleep':sleep,'Calendar':calendar,'Expenses':accounting,'Monthly reports':reports,'Activity':checkIn,'Profile':profile};
+for(const name of Object.keys(pages))button(name,()=>openPage(name),nav);openPage('Sleep')
+</script>
+</html>
