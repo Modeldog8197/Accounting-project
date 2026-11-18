@@ -5,6 +5,7 @@
 <title>WellLedger</title>
 <style>
 *{box-sizing:border-box}body{max-width:780px;margin:auto;padding:22px;background:#f7f6f2;color:#243139;font:16px/1.5 system-ui,sans-serif}h1,h2{font-family:Georgia,serif}nav,.controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}button,select,input{font:inherit;padding:6px 9px;border:1px solid #afb9bd;border-radius:4px;background:white}button{cursor:pointer}button.active,button.primary{background:#244c66;color:white}button:disabled{opacity:.45;cursor:default}main{background:white;border:1px solid #d6dbdc;padding:16px 22px}.row{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding:5px 0}.row input{width:100px}#status{color:#28536a}.track{background:#eceeee;height:12px;display:flex}.bar{display:block;height:100%}small{color:#50606c}
+textarea{display:block;width:100%;font:inherit;padding:8px;margin:6px 0}label:has(textarea){display:block;margin-top:12px}
 </style>
 <h1>WellLedger</h1><nav aria-label="Pages"></nav><main></main><p id="status" role="status"></p>
 <script>
@@ -16,7 +17,7 @@ const monday=s=>shift(s,-((parse(s).getDay()+6)%7));
 const dateLabel=s=>parse(s).toLocaleDateString('en-IN',{day:'numeric',month:'short',weekday:'short'});
 const today=stamp(new Date()),month=today.slice(0,7),previous=shift(month+'-01',-1).slice(0,7);
 let week=shift(monday(today),-7),day=today,left=month,right=previous,age=18;
-const nights={},filed=new Set(),expenses={},notes={},activity=['','',''];
+const nights={},filed=new Set(),expenses={},notes={};
 const categories=['Food & groceries','Transport','Entertainment','Other everyday','Medicines','Tests','Doctor visits','Other healthcare'];
 [7,8,6,7,8,7].forEach((v,i)=>nights[shift(week,i)]=v);
 expenses[shift(month+'-01',-1)]=[0,100,0,0,300,0,0,0];expenses[today]=[200,0,0,0,0,150,0,0];
@@ -45,19 +46,114 @@ function calendar(){
  add('p',day in nights?'Sleep: '+nights[day]+' hours':'No sleep recorded.');
  if(day in expenses){expenses[day].forEach((v,i)=>{if(v)add('div',categories[i]+' · '+currency(v))});add('p','Total: '+currency(expenses[day].reduce((a,b)=>a+b,0)))}else add('p','No expenses recorded.');
  const c=controls();button('Edit expenses',()=>openPage('Expenses'),c).disabled=day>today;button('Open sleep week',()=>{week=monday(day);openPage('Sleep')},c).disabled=day>today;
+ for(const [section,data] of Object.entries(health[day]||{})){
+  add('h3',section);for(const [k,v] of Object.entries(data))add('div',k==='start'?'Period start':k+': '+v);
+  if(section==='BMI' && bodyMass(data)!==null)add('div','BMI: '+bodyMass(data).toFixed(1));
+ }
+ const links=controls();for(const section of Object.keys(fieldsBySection))button(section,()=>openPage(section),links).disabled=day>today;
  const label=add('label','Reminder '),note=add('input','',label);note.value=notes[day]||'';button('Save reminder',()=>{notes[day]=note.value;statusBox.textContent='Reminder saved.'})
 }
 function reports(){
- const months=[...new Set([month,previous,...Object.keys(expenses).map(d=>d.slice(0,7)),...Object.keys(nights).map(d=>d.slice(0,7))])].sort().reverse();
+ const months=[...new Set([month,previous,...Object.keys(expenses).map(d=>d.slice(0,7)),...Object.keys(nights).map(d=>d.slice(0,7)),...Object.keys(health).map(d=>d.slice(0,7))])].sort().reverse();
  const c=controls();[left,right].forEach((m,i)=>{const label=add('label',i?'Compare with ':'Month ',c),s=add('select','',label);for(const k of months)add('option',k,s);s.value=m;s.onchange=()=>{if(i)right=s.value;else left=s.value;openPage('Monthly reports')}});
+ const label=add('label','Metric ',c),select=add('select','',label);
+ for(const name of ['Spending and sleep',...Object.keys(metrics)])add('option',name,select);
+ select.value=reportMetric;select.onchange=()=>{reportMetric=select.value;openPage('Monthly reports')};
+ if(reportMetric in metrics){healthReport();return}
  const rows=[left,right].map(m=>{const days=Object.keys(expenses).filter(d=>d.startsWith(m)),ns=Object.keys(nights).filter(d=>d.startsWith(m));let e=0,h=0;for(const d of days)expenses[d].forEach((v,i)=>{if(i<4)e+=v;else h+=v});return {m,e,h,total:e+h,days:days.length,n:ns.length,avg:ns.length?ns.reduce((s,d)=>s+nights[d],0)/ns.length:0}});
  function bars(values,max,colors){const track=add('div','');track.className='track';values.forEach((v,i)=>{const b=add('span','',track);b.className='bar';b.style.width=(v*100/max)+'%';b.style.background=colors[i]})}
  add('h3','Recorded spending');for(const r of rows){add('p',r.m+' · '+(r.days?currency(r.total):'No entries'));bars([r.e,r.h],Math.max(1,...rows.map(x=>x.total)),['#244c66','#bb793f']);add('small',currency(r.e)+' everyday + '+currency(r.h)+' healthcare · '+r.days+' recorded days')}
  add('h3','Average sleep');for(const r of rows){add('p',r.m+' · '+(r.n?r.avg.toFixed(1)+' h/night · '+r.n+' nights':'No entries'));bars([r.avg],24,['#477667'])}
 }
-function checkIn(){const fields=['Steps','Exercise (minutes)','Water (glasses)'].map((c,i)=>num(c,activity[i],1e9,i===0?1:'any'));button('Save check-in',()=>{for(const n of fields){n.required=true;if(!n.reportValidity())return}fields.forEach((n,i)=>activity[i]=n.value);statusBox.textContent='Check-in saved.'},controls())}
+const health = {
+ [shift(previous+'-01',2)]: {BMI:{'Weight (kg)':72,'Height (cm)':175}, Activity:{Steps:4100,'Exercise (minutes)':20,'Water (glasses)':6}, Cycle:{start:true}, Diet:{Meals:3,Notes:'Dal, rice and curd'}, 'Exercise plan':{Notes:'Evening walk'}},
+ [today]: {BMI:{'Weight (kg)':71,'Height (cm)':175}, Activity:{Steps:5200,'Exercise (minutes)':30,'Water (glasses)':7}, Cycle:{start:true}, Diet:{Meals:3,Notes:'Breakfast before class'}, 'Care notes':{Notes:'Appointment on Friday'}}
+};
+const fieldsBySection = {
+ 'BMI': [['Weight (kg)', .1, 1000], ['Height (cm)', 30, 300]],
+ 'Activity': [['Steps',0,null,true], ['Exercise (minutes)',0], ['Water (glasses)',0]],
+ 'Cycle': [], 'Diet': [['Meals',0,null,true]], 'Exercise plan': [], 'Care notes': []
+};
+const textSections = ['Cycle','Diet','Exercise plan','Care notes'];
+const metrics = {
+ 'BMI':['BMI','BMI','kg/m²'], 'Weight':['BMI','Weight (kg)','kg'], 'Height':['BMI','Height (cm)','cm'],
+ 'Steps':['Activity','Steps','steps'], 'Exercise minutes':['Activity','Exercise (minutes)','min'],
+ 'Water':['Activity','Water (glasses)','glasses'], 'Meals':['Diet','Meals','meals'],
+ 'Period starts':['Cycle','start','starts'], 'Days between starts':['Cycle','interval','days'],
+ 'Cycle notes':['Cycle','Notes','days logged'], 'Diet notes':['Diet','Notes','days logged'],
+ 'Exercise plans':['Exercise plan','Notes','days logged'], 'Care notes':['Care notes','Notes','days logged']
+};
+let reportMetric='Spending and sleep';
+function bodyMass(data){
+ if(data['Weight (kg)']===undefined || data['Height (cm)']===undefined)return null;
+ return data['Weight (kg)']/(data['Height (cm)']/100)**2;
+}
+function healthForm(section){
+ if(day>today)day=today;
+ picker('Date',day,s=>{day=s;openPage(section)},today);
+ const old=health[day]?.[section]||{};
+ const inputs=fieldsBySection[section].map(([key,low,high,whole])=>{
+  const input=num(key,old[key],high??'',whole?1:'any');
+  input.min=low;
+  return [key,input];
+ });
+ let start,note;
+ if(section==='Cycle'){
+  const label=add('label','Period started on this date ');
+  start=add('input','',label);start.type='checkbox';start.checked=Boolean(old.start);
+ }
+ if(textSections.includes(section)){
+  const label=add('label','Notes');note=add('textarea','',label);
+  note.value=old.Notes||'';note.rows=4;
+ }
+ button('Save entry',()=>{
+  if(!inputs.every(([,input])=>input.reportValidity()))return;
+  const data={};
+  for(const [key,input] of inputs)if(input.value!=='')data[key]=Number(input.value);
+  if(start?.checked)data.start=true;
+  if(note?.value.trim())data.Notes=note.value.trim();
+  if(Object.keys(data).length){health[day]??={};health[day][section]=data}
+  else if(health[day]){delete health[day][section];if(!Object.keys(health[day]).length)delete health[day]}
+  const bmi=bodyMass(data);
+  statusBox.textContent=bmi===null?'Saved to calendar.':'Saved to calendar. BMI '+bmi.toFixed(1)+' kg/m².';
+ },controls());
+ button('View calendar',()=>openPage('Calendar'));
+}
+function healthReport(){
+ const [section,key,unit]=metrics[reportMetric],count=['Notes','start'].includes(key);
+ const series=[];let prior;
+ for(const d of Object.keys(health).sort()){
+  const record=health[d][section]||{};let value=null;
+  if(key==='BMI')value=bodyMass(record);
+  else if(key==='interval' && record.start){
+   if(prior)value=(Date.parse(d)-Date.parse(prior))/86400000;
+   prior=d;
+  }else if(key in record)value=count?1:record[key];
+  if(value!==null)series.push({day:d,value});
+ }
+ function summary(m){
+  const rows=series.filter(r=>r.day.startsWith(m));
+  return {n:rows.length,value:count?rows.length:rows.length?rows.reduce((a,r)=>a+r.value,0)/rows.length:null}
+ }
+ const end=[left,right].sort()[1],months=[];
+ let cursor=end+'-01';
+ for(let i=0;i<6;i++){months.unshift(cursor.slice(0,7));cursor=shift(cursor,-Number(cursor.slice(8)))}
+ function graph(list){
+  const max=Math.max(1,...list.map(m=>summary(m).value||0));
+  for(const m of list){
+   const {n,value}=summary(m);
+   add('p',m+' · '+(n?Number(value.toFixed(2))+' '+unit+' ('+n+' records)':'No records'));
+   const track=add('div','');track.className='track';
+   const bar=add('span','',track);bar.className='bar';
+   bar.style.width=(100*(value||0)/max)+'%';bar.style.background='#477667';
+  }
+ }
+ add('h3',count?reportMetric:'Average · '+reportMetric);graph([left,right]);add('h3','Six months');graph(months);
+ if(key==='Notes')for(const {day:d} of [...series].reverse())if([left,right].includes(d.slice(0,7)))add('p',d+' · '+health[d][section].Notes);
+}
 function profile(){const n=num('Age',age,120,1);n.min=18;n.required=true;button('Save profile',()=>{if(n.reportValidity()){age=+n.value;statusBox.textContent='Profile saved.'}},controls())}
-const pages={'Sleep':sleep,'Calendar':calendar,'Expenses':accounting,'Monthly reports':reports,'Activity':checkIn,'Profile':profile};
+const pages={'Sleep':sleep,'Calendar':calendar,'Expenses':accounting,'Monthly reports':reports,'Profile':profile};
+for(const section of Object.keys(fieldsBySection))pages[section]=()=>healthForm(section);
 for(const name of Object.keys(pages))button(name,()=>openPage(name),nav);openPage('Sleep')
 </script>
 </html>

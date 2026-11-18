@@ -32,3 +32,12 @@ CREATE TABLE IF NOT EXISTS sleep_nights (
     PRIMARY KEY (user_id, night),
     FOREIGN KEY (user_id) REFERENCES users(id)
 );
+
+CREATE TABLE IF NOT EXISTS health_entries (
+    user_id INT NOT NULL,
+    entry_date DATE NOT NULL,
+    section VARCHAR(16) NOT NULL,
+    details TEXT NOT NULL,
+    PRIMARY KEY (user_id, entry_date, section),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);

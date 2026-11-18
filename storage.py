@@ -37,6 +37,8 @@ class Store:
             cursor.fetchall()
             cursor.execute('SELECT entry_date FROM daily_expenses WHERE user_id = %s', (0,))
             cursor.fetchall()
+            cursor.execute('SELECT entry_date FROM health_entries WHERE user_id = %s', (0,))
+            cursor.fetchall()
             self.connection.commit()
             cursor.close()
         except mysql.connector.Error:
@@ -175,6 +177,33 @@ class Store:
                 if hours is not None:
                     cursor.execute('INSERT INTO sleep_nights (user_id, night, hours, reviewed) VALUES (%s, %s, %s, %s)',
                                    (user_id, day, hours, review))
+            self.connection.commit()
+        except mysql.connector.Error:
+            self.connection.rollback()
+            raise
+        finally:
+            cursor.close()
+
+    def health_records(self, user_id):
+        records = {}
+        cursor = self.open_cursor()
+        try:
+            cursor.execute('SELECT entry_date, section, details FROM health_entries WHERE user_id = %s', (user_id,))
+            for day, section, details in cursor:
+                records.setdefault(day, {})[section] = json.loads(details)
+            self.connection.commit()
+        finally:
+            cursor.close()
+        return records
+
+    def save_health(self, user_id, day, section, details):
+        cursor = self.open_cursor()
+        try:
+            cursor.execute('DELETE FROM health_entries WHERE user_id = %s AND entry_date = %s AND section = %s',
+                           (user_id, day, section))
+            if details:
+                cursor.execute('INSERT INTO health_entries (user_id, entry_date, section, details) VALUES (%s, %s, %s, %s)',
+                               (user_id, day, section, json.dumps(details, ensure_ascii=False)))
             self.connection.commit()
         except mysql.connector.Error:
             self.connection.rollback()

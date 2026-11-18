@@ -28,7 +28,7 @@ If the database cannot open, check MySQL is running, db_config.py and setup.sql.
 FILES
 app.py: screens and calculations
 storage.py: login and saved inputs
-reports.py: monthly totals and sleep averages
+reports.py: monthly spending, sleep and health trends
 setup.sql: database tables
 db_config.example.py: connection template
 requirements.txt: Python packages

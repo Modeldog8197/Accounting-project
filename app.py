@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from tkinter import ttk, messagebox
 
 from storage import Store
-from reports import month_summary, week_start
+from reports import HEALTH_SECTIONS, METRICS, health_lines, metric_series, monthly_value, month_summary, week_start
 
 BG, WHITE, INK, MUTED = '#F6F5F1', '#FFFFFF', '#20282E', '#52606B'
 GREEN, SOFT, LINE, BLUE = '#244C66', '#E8EEF0', '#D4D8D7', '#BB793F'
@@ -152,12 +152,15 @@ class App(tk.Tk):
                         self.expense_day = today
                     if self.sleep_week == week_start(old):
                         self.sleep_week = week_start(today)
-                    if self.current in ('sleep', 'accounting', 'reports', 'calendar'):
+                    for route, day in self.health_days.items():
+                        if day == old:
+                            self.health_days[route] = today
+                    if self.current in HEALTH_SECTIONS or self.current in ('sleep', 'accounting', 'reports', 'calendar'):
                         self.pages[self.current].refresh()
         self.after(15000, self.check_day)
 
     def navigate(self, route):
-        if route in ('accounting', 'sleep') and self.user_id is not None:
+        if self.user_id is not None and (route in HEALTH_SECTIONS or route in ('accounting', 'sleep')):
             self.open_day(route, date.today())
         else:
             self.show(route)
@@ -165,7 +168,11 @@ class App(tk.Tk):
     def open_day(self, route, day):
         if self.current == route and not self.save_workspace():
             return
-        if route == 'accounting':
+        if day > date.today():
+            return
+        if route in HEALTH_SECTIONS:
+            self.health_days[route] = day
+        elif route == 'accounting':
             self.expense_day = day
         else:
             self.sleep_week = week_start(day)
@@ -197,7 +204,6 @@ class App(tk.Tk):
             self.pages[self.current].pack_forget()
         if route not in self.pages:
             self.pages[route] = Page(self.host, self, route)
-            self.pages[route].restore(self.saved.get('pages', {}).get(route, {}))
         self.current = route
         page = self.pages[route]
         page.pack(fill='both', expand=True)
@@ -223,6 +229,31 @@ class App(tk.Tk):
         # Load first to protect unreadable data.
         saved, _ = self.store.load(user_id)
         self.expense_log, self.nights = self.store.calendar_records(user_id)
+        self.health_log = self.store.health_records(user_id)
+        self.health_days = dict.fromkeys(HEALTH_SECTIONS, date.today())
+        if not saved.get('cycle_dates_imported'):
+            reminders = dict(saved.get('reminders', {}))
+            for key, text in list(reminders.items()):
+                prefix = 'Cycle: period start.'
+                lines = text.splitlines()
+                cycle_lines = [line for line in lines if line.startswith(prefix)]
+                if not cycle_lines:
+                    continue
+                day = date.fromisoformat(key)
+                if 'cycle' not in self.health_log.get(day, {}):
+                    record = {'start': True}
+                    notes = [line.removeprefix(prefix).strip() for line in cycle_lines]
+                    if any(notes):
+                        record['Notes'] = '\n'.join(dict.fromkeys(n for n in notes if n))
+                    self.store.save_health(user_id, day, 'cycle', record)
+                    self.health_log.setdefault(day, {})['cycle'] = record
+                remaining = '\n'.join(line for line in lines if not line.startswith(prefix))
+                if remaining.strip():
+                    reminders[key] = remaining
+                else:
+                    reminders.pop(key)
+            saved.update(reminders=reminders, cycle_dates_imported=True)
+            self.store.save(user_id, saved)
         self.expense_day = date.today()
         self.sleep_week = week_start(date.today())
         self.reset_pages()
@@ -241,13 +272,10 @@ class App(tk.Tk):
             return False
         if self.current == 'calendar':
             self.pages['calendar'].preserve_note()
-        page_data = dict(self.saved.get('pages', {}))
-        for route, page in self.pages.items():
-            values = page.snapshot()
-            if values:
-                page_data[route] = values
-        data = {'profile': {key: var.get() for key, var in self.user.items()},
-                'reminders': dict(self.reminders), 'pages': page_data}
+        if self.current in HEALTH_SECTIONS and not self.pages[self.current].save_health_entry():
+            return False
+        data = dict(self.saved)
+        data.update(profile={key: var.get() for key, var in self.user.items()}, reminders=dict(self.reminders))
         if data == self.saved:
             return True
         try:
@@ -319,9 +347,16 @@ class Page(tk.Frame):
         self.app, self.route = app, route
         self.heading = self.TITLES[route]
         label(self, self.heading, 25, bold=True).pack(anchor='w', pady=(0, 16))
+        if route in HEALTH_SECTIONS:
+            bar = tk.Frame(self, bg=BG)
+            bar.pack(fill='x', pady=(0, 10))
+            self.health_date_label = label(bar, '', 12, bold=True)
+            self.health_date_label.pack(side='left')
+            button(bar, 'Choose date', self.choose_health_date, False).pack(side='right')
         getattr(self, 'build_' + ('profile' if route == 'welcome' else route))()
 
     def refresh(self):
+        if self.route in HEALTH_SECTIONS: self.load_health_entry()
         if self.route == 'progress': self.refresh_progress()
         if self.route == 'accounting': self.load_expenses()
         if self.route == 'sleep': self.load_week()
@@ -381,28 +416,6 @@ class Page(tk.Frame):
         except mysql.connector.Error:
             self.feedback.configure(text='Could not open your account. Check MySQL and run setup.sql.', fg='#B42318')
 
-    def snapshot(self):
-        """Save inputs, excluding passwords and results."""
-        values = {}
-        for name in ('weight', 'height', 'cycle_date', 'cycle_note'):
-            if hasattr(self, name): values[name] = getattr(self, name).get()
-        for name in ('activity',):
-            if hasattr(self, name):
-                values[name] = {(' / '.join(key) if isinstance(key, tuple) else key): var.get()
-                                for key, var in getattr(self, name).items()}
-        if hasattr(self, 'plan'): values['plan'] = self.plan.get('1.0', 'end-1c')
-        return values
-
-    def restore(self, values):
-        for name in ('weight', 'height', 'cycle_date', 'cycle_note'):
-            if name in values: getattr(self, name).set(values[name])
-        for name in ('activity',):
-            if name in values:
-                for key, var in getattr(self, name).items():
-                    var.set(values[name].get(' / '.join(key) if isinstance(key, tuple) else key, ''))
-        if 'plan' in values:
-            self.plan.delete('1.0', 'end'); self.plan.insert('1.0', values['plan'])
-
     def build_progress(self):
         self.saved_time = label(self, '', 11, MUTED)
         self.saved_time.pack(anchor='w', pady=(0, 12))
@@ -427,7 +440,7 @@ class Page(tk.Frame):
                 if isinstance(value, dict): rows.update(value)
                 elif isinstance(value, list): rows.update({f'Night {i + 1} (hours)': v for i, v in enumerate(value)})
                 else: rows[key] = value
-            sections.append((('Undated inputs · ' if route in ('accounting', 'sleep') else '') + self.TITLES[route], rows))
+            sections.append((('Undated inputs · ' if route in HEALTH_SECTIONS or route in ('accounting', 'sleep') else '') + self.TITLES[route], rows))
         sections.append(('Calendar reminders', data.get('reminders', {})))
         count = 0
         for title, rows in sections:
@@ -605,7 +618,7 @@ class Page(tk.Frame):
         self.app.save_workspace()
 
     def build_fitness(self):
-        box = card(self, 'Today’s activity'); box.pack(fill='x')
+        box = card(self, 'Activity check-in'); box.pack(fill='x')
         self.activity = {key: tk.StringVar(self.app) for key in ('Steps', 'Exercise (minutes)', 'Water (glasses)')}
         for key, var in self.activity.items(): field(box.content, key, var)
         self.feedback = self.result(box.content)
@@ -727,22 +740,12 @@ class Page(tk.Frame):
 
     def build_cycle(self):
         box = card(self, 'Record a cycle date'); box.pack(fill='x')
-        self.cycle_date = tk.StringVar(self.app, date.today().isoformat())
-        self.cycle_note = tk.StringVar(self.app)
-        field(box.content, 'Period start date (YYYY-MM-DD)', self.cycle_date)
-        field(box.content, 'Notes (optional)', self.cycle_note)
+        self.period_start = tk.BooleanVar(self)
+        tk.Checkbutton(box.content, text='Period started on this date', variable=self.period_start, bg=WHITE).pack(anchor='w')
+        self.cycle_note = tk.StringVar(self)
+        field(box.content, 'Notes', self.cycle_note)
         self.feedback = self.result(box.content)
-        button(box.content, 'Add to calendar', self.save_cycle).pack(anchor='e')
-
-    def save_cycle(self):
-        try: value = date.fromisoformat(self.cycle_date.get().strip())
-        except ValueError:
-            self.feedback.configure(text='Use a date like 2026-10-07.', fg='#B42318'); return
-        key = value.isoformat()
-        existing = self.app.reminders.get(key, '')
-        self.app.reminders[key] = (existing + '\nCycle: period start. ' + self.cycle_note.get().strip()).strip()
-        if self.app.save_workspace():
-            self.feedback.configure(text='Saved to your calendar.', fg=GREEN)
+        button(box.content, 'Save cycle entry', self.save_notes).pack(anchor='e')
 
     def build_guides(self):
         self.tiles([('Diet & nutrition', 'nutrition'),
@@ -761,6 +764,9 @@ class Page(tk.Frame):
 
     def build_notes(self, title):
         box = card(self, title); box.pack(fill='x')
+        if self.route == 'nutrition':
+            self.meals = tk.StringVar(self)
+            field(box.content, 'Meals eaten (optional)', self.meals)
         self.plan = tk.Text(box.content, height=13, font=('Segoe UI', 11), wrap='word', bg=BG, fg=INK, relief='flat', padx=14, pady=14)
         self.plan.pack(fill='x')
         self.feedback = self.result(box.content)
@@ -768,7 +774,74 @@ class Page(tk.Frame):
         button(self, 'Plan a reminder', lambda: self.app.show('calendar'), False).pack(anchor='e', pady=18)
 
     def save_notes(self):
-        if self.app.save_workspace(): self.feedback.configure(text='Notes saved.', fg=GREEN)
+        if self.app.save_workspace(): self.feedback.configure(text='Saved to calendar.', fg=GREEN)
+
+    def choose_health_date(self):
+        day = self.app.health_days[self.route]
+        self.app.show('calendar')
+        if self.app.current == 'calendar':
+            cal = self.app.pages['calendar']
+            cal.month = day.replace(day=1)
+            cal.select_date(day)
+
+    def load_health_entry(self):
+        day = self.app.health_days[self.route]
+        self.health_date_label.configure(text=day.strftime('%A, %d %B %Y'))
+        data = self.app.health_log.get(day, {}).get(self.route, {})
+        if self.route == 'bmi':
+            self.weight.set(data.get('Weight (kg)', ''))
+            self.height.set(data.get('Height (cm)', ''))
+        elif self.route == 'fitness':
+            for key, var in self.activity.items():
+                var.set(data.get(key, ''))
+        elif self.route == 'cycle':
+            self.period_start.set(data.get('start', False))
+            self.cycle_note.set(data.get('Notes', ''))
+        else:
+            if self.route == 'nutrition':
+                self.meals.set(data.get('Meals', ''))
+            self.plan.delete('1.0', 'end')
+            self.plan.insert('1.0', data.get('Notes', ''))
+        self.feedback.configure(text='')
+
+    def save_health_entry(self):
+        day = self.app.health_days[self.route]
+        record = {}
+        try:
+            fields = []
+            if self.route == 'bmi':
+                fields = [('Weight (kg)', self.weight, .1, 1000), ('Height (cm)', self.height, 30, 300)]
+            elif self.route == 'fitness':
+                fields = [(key, var, 0, None) for key, var in self.activity.items()]
+            elif self.route == 'nutrition':
+                fields = [('Meals', self.meals, 0, None)]
+            for key, var, low, high in fields:
+                if var.get().strip():
+                    value = number(var.get(), key, low, high)
+                    if key in ('Steps', 'Meals') and not value.is_integer():
+                        raise ValueError(f'{key} must be a whole number.')
+                    record[key] = int(value) if value.is_integer() else value
+            if self.route == 'cycle' and self.period_start.get():
+                record['start'] = True
+            note = self.cycle_note.get() if self.route == 'cycle' else ''
+            if hasattr(self, 'plan'):
+                note = self.plan.get('1.0', 'end-1c')
+            if note.strip():
+                record['Notes'] = note.strip()
+            if record == self.app.health_log.get(day, {}).get(self.route, {}):
+                return True
+            self.app.store.save_health(self.app.user_id, day, self.route, record)
+        except (ValueError, mysql.connector.Error) as exc:
+            messagebox.showerror('Could not save health entry', str(exc), parent=self.app)
+            return False
+        if record:
+            self.app.health_log.setdefault(day, {})[self.route] = record
+        else:
+            entries = self.app.health_log.get(day, {})
+            entries.pop(self.route, None)
+            if not entries:
+                self.app.health_log.pop(day, None)
+        return True
 
     def build_reports(self):
         controls = tk.Frame(self, bg=BG)
@@ -782,6 +855,10 @@ class Page(tk.Frame):
             pick.pack(side='left', padx=(0, 18))
             pick.bind('<<ComboboxSelected>>', lambda _: self.refresh_reports())
             self.month_picks.append(pick)
+        self.metric = ttk.Combobox(self, values=['Spending and sleep', *METRICS], state='readonly', width=24)
+        self.metric.set('Spending and sleep')
+        self.metric.pack(anchor='w')
+        self.metric.bind('<<ComboboxSelected>>', lambda _: self.refresh_reports())
         self.report_text = label(self, '', 11, justify='left')
         self.report_text.pack(anchor='w', pady=16)
         self.plot_area = tk.Frame(self, bg=WHITE)
@@ -790,10 +867,13 @@ class Page(tk.Frame):
     def refresh_reports(self):
         months = [p.get() for p in self.month_picks]
         available = set(months)
-        for day in [date.today(), *self.app.expense_log, *self.app.nights]:
+        for day in [date.today(), *self.app.expense_log, *self.app.nights, *self.app.health_log]:
             available.add(day.strftime('%Y-%m'))
         for pick in self.month_picks:
             pick.configure(values=sorted(available, reverse=True))
+        if self.metric.get() in METRICS:
+            self.health_report(months)
+            return
         stats = [month_summary(self.app.expense_log, self.app.nights, m) for m in months]
         lines = []
         for month, (everyday, health, days, avg, nights) in zip(months, stats):
@@ -829,6 +909,51 @@ class Page(tk.Frame):
         canvas.draw()
         canvas.get_tk_widget().pack(fill='both', expand=True)
 
+    def health_report(self, months):
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        metric = self.metric.get()
+        section, field, unit = METRICS[metric]
+        series = metric_series(self.app.health_log, metric)
+        count = field in ('Notes', 'start')
+        trend_months = []
+        end = date.fromisoformat(max(months) + '-01')
+        for _ in range(6):
+            trend_months.insert(0, end.strftime('%Y-%m'))
+            end = (end - timedelta(days=1)).replace(day=1)
+        for w in self.plot_area.winfo_children():
+            w.destroy()
+        fig = Figure(figsize=(8, 3.8), facecolor=WHITE, constrained_layout=True)
+        comparison, trend = fig.subplots(1, 2)
+        lines = []
+        for i, month in enumerate(months):
+            value, n = monthly_value(series, month, count)
+            if n:
+                comparison.bar(i, value, .5, color=[GREEN, BLUE][i])
+                lines.append(f'{month}   {value:.2f} {unit}   ({n} records)')
+            else:
+                lines.append(f'{month}   No records')
+        self.report_text.configure(text='\n'.join(lines))
+        comparison.set_xticks([0, 1], months)
+        comparison.set_xlim(-.6, 1.6)
+        comparison.set_title(metric if count else 'Average · ' + metric)
+        points = [monthly_value(series, m, count)[0] for m in trend_months]
+        trend.plot(range(6), [v if v is not None else float('nan') for v in points], 'o-', color=GREEN)
+        trend.set_xticks(range(6), trend_months, rotation=35, ha='right')
+        trend.set_title('Six months')
+        for axis in (comparison, trend):
+            axis.set_ylabel(unit)
+            axis.set_ylim(bottom=0, top=max(1, axis.get_ylim()[1]))
+        canvas = FigureCanvasTkAgg(fig, master=self.plot_area)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill='both', expand=True)
+        if field == 'Notes':
+            for month in dict.fromkeys(months):
+                for day in sorted(series, reverse=True):
+                    if day.strftime('%Y-%m') == month:
+                        note = self.app.health_log[day][section]['Notes']
+                        label(self.plot_area, f'{day}   {note}', 10, wraplength=650, justify='left').pack(anchor='w')
+
     def build_calendar(self):
         self.selected = date.today(); self.month = self.selected.replace(day=1)
         controls = tk.Frame(self, bg=BG); controls.pack(fill='x', pady=(0, 16))
@@ -847,6 +972,12 @@ class Page(tk.Frame):
         for title, route in [('Edit expenses', 'accounting'), ('Open sleep week', 'sleep')]:
             btn = button(links, title, lambda r=route: self.app.open_day(r, self.selected), False)
             btn.pack(side='left', padx=(0, 8))
+            self.day_links.append(btn)
+        health_links = tk.Frame(box.content, bg=WHITE)
+        health_links.pack(anchor='w', pady=6)
+        for i, (route, title) in enumerate(HEALTH_SECTIONS.items()):
+            btn = button(health_links, title, lambda r=route: self.app.open_day(r, self.selected), False)
+            btn.grid(row=i // 3, column=i % 3, sticky='ew', padx=2, pady=2)
             self.day_links.append(btn)
         label(box.content, 'Reminder', 10, bold=True).pack(anchor='w', pady=(10, 2))
         self.notes = tk.Text(box.content, height=5, font=('Segoe UI', 11), wrap='word', bg=BG, fg=INK, relief='flat', padx=12, pady=12)
@@ -880,7 +1011,9 @@ class Page(tk.Frame):
             rows.append(f'Total: ₹{sum(expenses.values()):,.2f}')
         if self.selected in self.app.nights:
             rows.append(f'Sleep: {self.app.nights[self.selected][0]:g} hours')
-        self.day_record.configure(text='\n'.join(rows) or 'No spending or sleep recorded.')
+        for section, data in self.app.health_log.get(self.selected, {}).items():
+            rows.append(HEALTH_SECTIONS[section] + ' · ' + ' · '.join(health_lines(section, data)))
+        self.day_record.configure(text='\n'.join(rows) or 'No entries recorded.', wraplength=650)
         for btn in self.day_links:
             btn.configure(state='normal' if self.selected <= date.today() else 'disabled')
         self.notes.delete('1.0', 'end'); self.notes.insert('1.0', self.app.reminders.get(self.selected.isoformat(), ''))
@@ -898,7 +1031,7 @@ class Page(tk.Frame):
             for col, day in enumerate(week):
                 if not day: continue
                 value = self.month.replace(day=day)
-                text = f"{day}{' •' if value.isoformat() in self.app.reminders or value in self.app.nights or value in self.app.expense_log else ''}"
+                text = f"{day}{' •' if value.isoformat() in self.app.reminders or value in self.app.nights or value in self.app.expense_log or value in self.app.health_log else ''}"
                 btn = button(parent, text, lambda d=value: self.select_date(d), value == self.selected)
                 btn.grid(row=row, column=col, sticky='ew', padx=3, pady=3)
 
